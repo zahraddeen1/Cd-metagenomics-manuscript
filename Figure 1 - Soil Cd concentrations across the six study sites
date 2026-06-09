@@ -1,0 +1,366 @@
+# =========================================================
+# Title: Cadmium bar plot
+# Author: Zahraddeen Kabir Sani
+# Date: 09.06.2026
+# =========================================================
+
+# -------------------------
+# 1. ENVIRONMENT SETUP
+# -------------------------
+
+WORKING_DIR <- "C:/obj2_dataset/obj2_data2/raw_data"
+setwd(WORKING_DIR)
+cat("✅ Working directory set to:", WORKING_DIR, "\n")
+cat("Setting up environment...\n")
+
+OUTPUT_DIR <- "C:/obj2_dataset/Results_new"
+if (!dir.exists(OUTPUT_DIR)) dir.create(OUTPUT_DIR, recursive = TRUE)
+
+# Required packages
+required_packages <- c(
+  "tidyverse",    # Data manipulation and visualization
+  "agricolae",   # Agricultural statistics (for HSD.test)
+  "readxl",       # Excel file reading
+  "ggplot2",      # Advanced plotting
+  "scales"        # Scale functions
+)
+
+# Installation and loading of packages
+install_and_load <- function(pkg) {
+  if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    cat(paste("Installing", pkg, "...\n"))
+    install.packages(pkg, dependencies = TRUE, repos = "https://cran.rstudio.com/")
+    library(pkg, character.only = TRUE, quietly = TRUE)
+  }
+}
+
+# Install and load all packages
+invisible(sapply(required_packages, install_and_load))
+
+options(
+  scipen = 999,           # Disable scientific notation
+  stringsAsFactors = FALSE, 
+  digits = 3              # Number of digits to display
+)
+
+cat("Environment setup complete!\n\n")
+
+# -------------------------
+# 2. DATA LOADING AND PREPROCESSING
+# -------------------------
+cat("Loading data...\n")
+
+load_data <- function() {
+  # Try multiple file formats
+  if (file.exists("Obj_2_Metadata.xlsx")) {
+    cat("Loading from Excel file...\n")
+    return(readxl::read_excel("Obj_2_Metadata.xlsx"))
+  } else if (file.exists("Obj_2_Metadata.xlsx - in.csv")) {
+    cat("Loading from CSV file (comma decimal)....\n")
+    return(readr::read_csv("Obj_2_Metadata.xlsx - in.csv", 
+                           locale = locale(decimal_mark = ",")))
+  } else if (file.exists("Obj_2_Metadata.csv")) {
+    cat("Loading from CSV file...\n")
+    return(readr::read_csv("Obj_2_Metadata.csv"))
+  } else {
+    stop("Data file not found! Please ensure the file is in the working directory.")
+  }
+}
+
+data_raw <- tryCatch(
+  load_data(),
+  error = function(e) {
+    cat("Error loading data:", e$message, "\n")
+    stop("Failed to load data. Please check file path and format.")
+  }
+)
+
+# Definining variable of interest
+metal_var_cd <- "Cd"
+
+# Data cleaning and preparation for Cd analysis
+data_clean_cd <- data_raw %>%
+  select(Site_Name, any_of(metal_var_cd)) %>%
+  filter(!is.na(Site_Name)) %>%
+  mutate(!!metal_var_cd := as.numeric(gsub("%", "", as.character(.[[metal_var_cd]])))) %>%
+  filter(!is.na(!!sym(metal_var_cd))) %>%
+  mutate(Site_Name = as.factor(Site_Name))
+
+if (nrow(data_clean_cd) == 0 || !metal_var_cd %in% names(data_clean_cd)) {
+  stop(paste("Failed to prepare data for", metal_var_cd, ". Check column names or data contents."))
+}
+
+cat("Data cleaned successfully! Analysis data rows:", nrow(data_clean_cd), "\n\n")
+
+# -------------------------
+# 3. ANOVA AND POST-HOC (TUKEY HSD)
+# -------------------------
+cat("Performing ANOVA and Tukey HSD test for Cd...\n")
+
+fml_cd <- as.formula(paste(metal_var_cd, "~ Site_Name"))
+anova_res_cd <- aov(fml_cd, data = data_clean_cd)
+anova_summary_cd <- summary(anova_res_cd)
+p_value_cd <- anova_summary_cd[[1]]$`Pr(>F)`[1]
+f_value_cd <- anova_summary_cd[[1]]$`F value`[1]
+
+letters_cd <- NULL
+if (is.finite(p_value_cd) && p_value_cd < 0.05) {
+  cat(paste0("ANOVA P-Value: ", round(p_value_cd, 4), " (Significant). Running Tukey HSD.\n"))
+  tryCatch({
+    posthoc_cd <- agricolae::HSD.test(anova_res_cd, trt = "Site_Name", console = FALSE)
+    letters_cd <- posthoc_cd$groups %>%
+      rownames_to_column(var = "Site_Name") %>%
+      rename(Letter = groups)
+  }, error = function(e) {
+    cat("Error during HSD test:", e$message, "\n")
+  })
+} else {
+  cat(paste0("ANOVA P-Value: ", round(p_value_cd, 4), " (Not significant). No post-hoc letters assigned.\n"))
+}
+
+# --------------------------------------------------
+# 4. DATA PREPARATION FOR PLOTTING & CONSOLE OUTPUT
+# --------------------------------------------------
+cat("Preparing plot data and final summary table...\n")
+
+# Calculate means, SD, SE, N
+metals_plot_data_cd <- data_clean_cd %>%
+  group_by(Site_Name) %>%
+  summarise(
+    Mean = mean(!!sym(metal_var_cd), na.rm = TRUE),
+    SD = sd(!!sym(metal_var_cd), na.rm = TRUE),
+    N = sum(!is.na(!!sym(metal_var_cd))),
+    SE = SD / sqrt(N),
+    .groups = "drop"
+  )
+
+# Add letters
+if (!is.null(letters_cd)) {
+  metals_plot_data_cd <- metals_plot_data_cd %>%
+    left_join(letters_cd, by = "Site_Name") %>%
+    mutate(Plot_Label = Letter) # Use HSD letters for the plot label
+} else {
+  metals_plot_data_cd <- metals_plot_data_cd %>%
+    mutate(Letter = "ns", Plot_Label = "ns") 
+}
+
+# === CRITICAL STEP: Calculate the dynamic position for the statistical letters ===
+metals_plot_data_cd <- metals_plot_data_cd %>%
+  mutate(
+    # Y_Max_Measured is the top of the highest error bar (Mean + SE)
+    Y_Max_Measured = max(Mean + SE, na.rm = TRUE), 
+    # Label position is slightly above the highest error bar
+    Label_Pos = Y_Max_Measured * 1.03 # Move slightly closer for better fit
+  )
+
+# Add ANOVA results for display
+anova_display_df <- data.frame(
+  Variable = metal_var_cd,
+  F_Value = round(f_value_cd, 3),
+  P_Value = round(p_value_cd, 4)
+)
+
+# Create p-value label for plot annotation
+p_label <- ifelse(
+  p_value_cd < 0.001,
+  "italic(p) < 0.001",
+  paste0("italic(p) == ", format(round(p_value_cd, 3), nsmall = 3))
+)
+
+# Define the threshold for plotting
+agricultural_threshold <- 3 # mg/kg
+
+# Dynamic buffer between error bars and significance letters
+letter_buffer <- max(metals_plot_data_cd$SE, na.rm = TRUE) * 0.28
+
+metals_plot_data_cd <- metals_plot_data_cd %>%
+  mutate(
+    Letter_Y = Mean + SE + letter_buffer
+  )
+
+# Determine the dynamic Y-axis maximum for the plot's scale
+max_y_cd <- max(
+  metals_plot_data_cd$Letter_Y,
+  agricultural_threshold * 1.15,
+  na.rm = TRUE
+)
+
+# -------------------------
+# 5. CONSOLE OUTPUT
+# -------------------------
+cat("\n\n")
+cat("=" %>% rep(60) %>% paste(collapse = ""), "\n")
+cat(paste("CONSOLIDATED STATISTICAL SUMMARY FOR CADMIUM (Cd)\n"))
+cat("=" %>% rep(60) %>% paste(collapse = ""), "\n")
+
+# Display ANOVA result
+cat("ANOVA Result (Site_Name Factor):\n")
+print(anova_display_df, row.names = FALSE)
+cat("\n")
+
+# Display Site Summary with HSD letters
+cat("Site-Specific Descriptive Statistics and Significance (Tukey HSD):\n")
+
+summary_table_cd <- metals_plot_data_cd %>%
+  select(Site_Name, N, Mean, SD, SE, Letter) %>%
+  mutate(
+    Mean_SE = paste0(format(Mean, digits = 3), " ± ", format(SE, digits = 3))
+  ) %>%
+  select(Site_Name, N, Mean_SE, SD, Letter) %>%
+  rename(
+    `Site` = Site_Name,
+    `N` = N,
+    `Mean ± SE` = Mean_SE,
+    `SD` = SD,
+    `HSD Group` = Letter
+  )
+
+print(summary_table_cd, row.names = FALSE)
+cat("\nNote: Letters (A, B, C...) indicate groups with no statistically significant difference (p < 0.05).\n")
+cat("=" %>% rep(60) %>% paste(collapse = ""), "\n\n")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. PUBLICATION THEME (Adapted from HMR Heatmap style)
+# ══════════════════════════════════════════════════════════════════════════════
+PUB_FONT   <- "Helvetica"
+BASE_PT    <- 20
+LABEL_PT   <- BASE_PT
+TITLE_PT   <- BASE_PT * 0.6
+BORDER_COL <- "#333333"
+
+# Consistent site color mapping
+site_colors_manual <- c(
+  "Ben Guerir" = "#388E3C", "Bir Mezoui" = "#1976D2", "Gantour" = "#7B1FA2", 
+  "Tadla" = "#F06292", "Tashraft" = "#FBC02D", "Youssoufia" = "#B0B0B0"
+)
+
+# Publication Theme
+theme_publication <- function() {
+  theme_bw(base_size = BASE_PT) +
+    theme(
+      text = element_text(
+        family = PUB_FONT,
+        colour = "black"
+      ),
+      plot.title = element_text(
+        face = "bold",
+        size = TITLE_PT,
+        colour = "black"
+      ),
+      axis.title = element_text(
+        face = "bold",
+        size = LABEL_PT,
+        colour = "black"
+      ),
+      axis.text.x = element_text(
+        angle = 90,
+        vjust = 0.5,
+        hjust = 1,
+        margin = margin(t = 5),
+        colour = "black"
+      ),
+      axis.text.y = element_text(
+        size = LABEL_PT,
+        colour = "black"
+      ),
+      panel.grid.minor = element_blank(),
+      panel.border = element_rect(
+        color = BORDER_COL,
+        linewidth = 0.8
+      ),
+      legend.position = "none"
+    )
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. GENERATE PLOT (Figure 1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Create the dataframe for the threshold line and label
+threshold_df <- data.frame(
+  Threshold = agricultural_threshold,
+  Label = "Threshold = 3 mg/kg",
+  Label_Y = agricultural_threshold + (max_y_cd * 0.01)
+)
+
+p_cd_final <- ggplot(metals_plot_data_cd, aes(x = Site_Name, y = Mean, fill = Site_Name)) +
+  # 1. Bar plot
+  geom_bar(stat = "identity", color = BORDER_COL, linewidth = 0.5) +
+  
+  # 2. Error bars
+  geom_errorbar(aes(ymin = Mean - SE, ymax = Mean + SE), width = 0.2, linewidth = 0.6) +
+  
+  # 3. Statistical letters
+  geom_text(
+    aes(y = Letter_Y, label = Plot_Label),
+    family = PUB_FONT,
+    fontface = "plain",
+    colour = "black",
+    size = BASE_PT / 3
+  ) +
+  
+  # 4. Threshold line
+  geom_hline(yintercept = agricultural_threshold, color = BORDER_COL, 
+             linewidth = 0.8, linetype = "dashed") +
+  
+  # 5. Threshold label
+  geom_label(
+    data = threshold_df,
+    aes(x = Inf, y = Label_Y, label = Label),
+    hjust = 1.1,
+    vjust = 0,
+    fill = "white",
+    colour = "black",
+    label.size = 0.3,
+    size = BASE_PT / 4,
+    family = PUB_FONT,
+    fontface = "bold",
+    inherit.aes = FALSE
+  ) +
+  
+  # 6. ANOVA p-value
+  annotate(
+    "text",
+    x = Inf,
+    y = max_y_cd * 1.08,
+    label = p_label,
+    parse = TRUE,
+    hjust = 1.1,
+    vjust = 1,
+    family = PUB_FONT,
+    colour = "black",
+    size = BASE_PT / 3
+  ) +
+  
+  # Formatting
+  scale_fill_manual(values = site_colors_manual) +
+  labs(x = NULL, y = expression(bold("Cadmium (mg kg"^"-1"~")"))) +
+  theme_publication() +
+  coord_cartesian(ylim = c(0, max_y_cd * 1.05), clip = "off")
+
+# -------------------------
+# 8. SAVE PLOT
+# -------------------------
+
+# Define the full path for the output file
+output_file_path <- file.path(OUTPUT_DIR, "Figure_1_Cadmium_Bar_Plots.tiff")
+
+# Use the correct plot object name: p_cd_final
+#aspect_ratio <- 10.5 / 10
+
+ggsave(
+  filename = output_file_path,
+  plot = p_cd_final,
+  width = 15, #* aspect_ratio,
+  height = 16,
+  units = "cm",
+  dpi = 600,
+  compression = "lzw"
+)
+
+cat("\n")
+cat("=" %>% rep(80) %>% paste(collapse = ""), "\n")
+cat("CADMIUM ANALYSIS COMPLETE!\n")
+cat("Figure saved as:", output_file_path, "\n")
+cat("=" %>% rep(80) %>% paste(collapse = ""), "\n")
