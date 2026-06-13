@@ -1,0 +1,262 @@
+# ==============================================================================
+# Title: Taxonomic Circular Plot (Phylum) - Multi-Domain Mapping
+# Author: Zahraddeen Kabir Sani
+# Date: 07.03.2026
+# ==============================================================================
+
+# --- 1. LOAD LIBRARIES (Automated) ---
+required_packages <- c("readxl", "dplyr", "tidyr", "stringr", "circlize", 
+                       "RColorBrewer", "colorspace", "ragg", "tools")
+for (pkg in required_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg, dependencies = TRUE)
+  library(pkg, character.only = TRUE)
+}
+
+# --- 2. SETTINGS ---
+setwd("C:/obj2_dataset")
+input_file <- "obj2_data2/raw_data/Kraken2_taxonomy_table.xlsx"
+output_dir <- "Results_new"
+
+if (!dir.exists(output_dir)) dir.create(output_dir)
+raw_data <- read_excel(input_file)
+
+# ------------------------------------------------------------------------------
+# GLOBAL PUBLICATION SETTINGS
+# ------------------------------------------------------------------------------
+
+FIG_FONT  <- "Helvetica"
+BASE_SIZE <- 20
+
+SITE_COLS <- c(
+  "Ben Guerir" = "#388E3C",
+  "Bir Mezoui" = "#1976D2",
+  "Gantour"    = "#7B1FA2",
+  "Tadla"      = "#F06292",
+  "Tashraft"   = "#FBC02D",
+  "Youssoufia" = "#B0B0B0"
+)
+
+# --- 3. TAXONOMY PARSING & SITE MAPPING ---
+bacteria_list <- c("Bacillati", "Thermotogati", "Pseudomonadati", "Fusobacteriati")
+archaea_list  <- c("Methanobacteriati", "Thermoproteati", "Nanobdellati", "Promethearchaeati")
+fungi_list    <- c("Fungi")
+
+tax_col_name <- "taxonID"
+
+count_cols <- colnames(raw_data)[
+  colnames(raw_data) != "taxonID" &
+    !grepl("_frac$", colnames(raw_data))
+]
+
+data_parsed <- raw_data %>%
+  separate(
+    !!sym(tax_col_name),
+    into   = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"),
+    sep    = "\\|",
+    fill   = "right",
+    remove = FALSE
+  ) %>%
+  mutate(across(Kingdom:Species, ~str_remove(., "^[kpcofgs]__"))) %>%
+  mutate(Phylum = str_replace_all(Phylum, "_", " ")) %>%
+  mutate(Phylum = ifelse(is.na(Phylum) | Phylum == "", "Unclassified", Phylum)) %>%
+  mutate(MappedDomain = case_when(
+    Kingdom %in% bacteria_list ~ "Bacteria",
+    Kingdom %in% archaea_list  ~ "Archaea",
+    Kingdom %in% fungi_list    ~ "Fungi",
+    TRUE                       ~ "Other"
+  ))
+
+data_long <- data_parsed %>%
+  pivot_longer(cols = all_of(count_cols), names_to = "Sample", values_to = "Count") %>%
+  mutate(SiteCode = substr(Sample, 1, 2)) %>%
+  mutate(Site = case_when(
+    SiteCode == "BG" ~ "Ben Guerir",
+    SiteCode == "BM" ~ "Bir Mezoui",
+    SiteCode == "GT" ~ "Gantour",
+    SiteCode == "TD" ~ "Tadla",
+    SiteCode == "TS" ~ "Tashraft",
+    SiteCode == "YS" ~ "Youssoufia",
+    TRUE             ~ SiteCode
+  )) %>%
+  mutate(Site = factor(Site, levels = c("Ben Guerir", "Bir Mezoui", "Gantour",
+                                        "Tadla", "Tashraft", "Youssoufia")))
+
+# --- 4. MASTER PLOTTING FUNCTION ---
+create_chord_plot <- function(df, domain_label, filename) {
+  
+  filename_tif <- paste0(tools::file_path_sans_ext(filename), ".tif")
+  full_path    <- file.path(output_dir, filename_tif)
+  
+  # A. Relative Abundance
+  site_phylum_rel <- df %>%
+    group_by(Site, Phylum) %>%
+    summarise(Total = sum(Count, na.rm = TRUE), .groups = "drop") %>%
+    filter(Total > 0) %>%
+    group_by(Site) %>%
+    mutate(RelAbund = (Total / sum(Total)) * 100) %>%
+    ungroup()
+  
+  # B. Top 10 Phyla
+  top_phyla <- site_phylum_rel %>%
+    filter(Phylum != "Unclassified") %>%
+    group_by(Phylum) %>%
+    summarise(MeanAbund = mean(RelAbund), .groups = "drop") %>%
+    slice_max(MeanAbund, n = 10) %>%
+    pull(Phylum)
+  
+  plot_df <- site_phylum_rel %>%
+    mutate(PhylumCategory = ifelse(Phylum %in% top_phyla, Phylum, "Others")) %>%
+    group_by(Site, PhylumCategory) %>%
+    summarise(Value = sum(RelAbund), .groups = "drop") %>%
+    rename(Phylum = PhylumCategory)
+  
+  # C. Colors
+  sites           <- levels(plot_df$Site)
+  phyla_all       <- sort(unique(plot_df$Phylum))
+  phyla_no_others <- phyla_all[phyla_all != "Others"]
+  
+  phyla_colors <- setNames(
+    colorspace::qualitative_hcl(
+      length(phyla_no_others),
+      palette = "Dark 3"
+    ),
+    phyla_no_others
+  )
+  
+  if ("Others" %in% phyla_all) phyla_colors["Others"] <- "#999999"
+  
+  # Domain-specific manual color swaps
+  if (all(c("Methanobacteriota", "Promethearchaeota") %in% names(phyla_colors))) {
+    tmp_color                         <- phyla_colors["Methanobacteriota"]
+    phyla_colors["Methanobacteriota"] <- phyla_colors["Promethearchaeota"]
+    phyla_colors["Promethearchaeota"] <- tmp_color
+  }
+  
+  if (all(c("Actinomycetota", "Myxococcota") %in% names(phyla_colors))) {
+    tmp_color                      <- phyla_colors["Actinomycetota"]
+    phyla_colors["Actinomycetota"] <- phyla_colors["Myxococcota"]
+    phyla_colors["Myxococcota"]    <- tmp_color
+  }
+  
+  grid_cols   <- c(SITE_COLS, phyla_colors)
+  link_colors <- phyla_colors[plot_df$Phylum]
+  
+  # D. Render TIFF
+  ragg::agg_tiff(
+    full_path,
+    width       = 32,
+    height      = 18,
+    units       = "in",
+    res         = 600,
+    compression = "lzw"
+  )
+  
+  par(
+    family = FIG_FONT,
+    ps     = BASE_SIZE
+  )
+  
+  # Layout: chord panel gets more space, legend panel is narrow
+  layout(matrix(c(1, 2), nrow = 1), widths = c(4, 2))
+  par(mar = c(0, 0, 0, 0))
+  
+  # ------------------------------------------------------------------
+  # Chord diagram
+  # canvas.xlim right extended to shift chord left, clearing legend overlap
+  # canvas.ylim expanded top/bottom to ensure full circle stays in canvas
+  # track.height increased so label y-offset sits within the track
+  # ------------------------------------------------------------------
+  circos.clear()
+  circos.par(
+    start.degree  = 90,
+    gap.degree    = c(rep(2, length(sites) - 1), 12,
+                      rep(2, length(phyla_all) - 1), 12),
+    track.margin  = c(0.01, 0.01),
+    canvas.xlim   = c(-1.1, 1.4),  # left expanded slightly so left arc is not clipped
+    canvas.ylim   = c(-1.1, 1.1)   # top/bottom expanded so top arc is not clipped
+  )
+  
+  chordDiagram(
+    plot_df,
+    grid.col          = grid_cols,
+    col               = link_colors,
+    transparency      = 0.35,
+    directional       = 1,
+    direction.type    = c("diffHeight", "arrows"),
+    link.arr.type     = "big.arrow",
+    annotationTrack   = "grid",
+    preAllocateTracks = list(
+      track.height = 0.08   # increased from 0.04 so labels fit inside track
+    )
+  )
+  
+  # E. Site Labels
+  # Use CELL_META$ycenter instead of ylim[1] + offset so text
+  # is always placed at the vertical midpoint of the track
+  circos.track(track.index = 1, panel.fun = function(x, y) {
+    sector.index <- get.cell.meta.data("sector.index")
+    if (sector.index %in% sites) {
+      circos.text(
+        CELL_META$xcenter,
+        CELL_META$ycenter,   # centered vertically within track — no out-of-region
+        sector.index,
+        facing     = "bending.inside",
+        niceFacing = TRUE,
+        cex        = 2.3,
+        font       = 2,
+        col        = "black"
+      )
+    }
+  }, bg.border = NA)
+  
+  # F. Legend — adjusted for the new layout
+  plot.new()
+  # xpd = NA allows drawing anywhere on the panel without clipping
+  par(mar = c(0, 0, 0, 0), xpd = NA) 
+  
+  legend(
+    x          = -0.2,      # INCREASE to move RIGHT, DECREASE to move LEFT
+    y          = 0.5,      # Vertical midpoint of the legend panel
+    legend     = names(phyla_colors),
+    col        = phyla_colors,
+    pch        = 15,
+    title      = "Phylum",
+    title.adj  = 0,
+    title.font = 2,
+    cex        = 2.5,
+    pt.cex     = 8,
+    text.font  = 1,
+    adj        = c(0, 0.5),
+    x.intersp  = 1.5,
+    y.intersp  = 2,
+    bty        = "n",
+    xjust      = 0,       # Ensures the legend is anchored at its left side
+    yjust      = 0.5       # CRITICAL: This centers the box vertically on y=0.5
+  )
+  
+  dev.off()
+  circos.clear()
+  
+  cat(sprintf("  [✓] Saved: %s\n", full_path))
+}
+
+# --- 5. EXECUTION ---
+bacteria_data <- data_long %>% filter(MappedDomain == "Bacteria")
+if (nrow(bacteria_data) > 0) {
+  cat("Plotting Bacteria...\n")
+  create_chord_plot(bacteria_data, "Bacteria", "bacteria_chord")
+}
+
+archaea_data <- data_long %>% filter(MappedDomain == "Archaea")
+if (nrow(archaea_data) > 0) {
+  cat("Plotting Archaea...\n")
+  create_chord_plot(archaea_data, "Archaea", "archaea_chord")
+}
+
+fungal_data <- data_long %>% filter(MappedDomain == "Fungi")
+if (nrow(fungal_data) > 0) {
+  cat("Plotting Fungi...\n")
+  create_chord_plot(fungal_data, "Fungi", "fungi_chord")
+}
+
+cat("\n=== Done! All 6 sites processed for Bacteria, Archaea, and Fungi. ===\n")
