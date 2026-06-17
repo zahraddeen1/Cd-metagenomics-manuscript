@@ -295,13 +295,25 @@ generate_figures <- function(res, out_root) {
       pull(!!sym(tax_level))
     plot_data <- taxa_data %>%
       mutate(
-        Taxa_Label = if_else(!!sym(tax_level) %in% top_taxa,
-                             as.character(!!sym(tax_level)), "Other")
+        Taxa_Label = if_else(
+          !!sym(tax_level) %in% top_taxa,
+          as.character(!!sym(tax_level)),
+          "Other"
+        ),
+        Taxa_Label = gsub("_", " ", Taxa_Label)
       ) %>%
       group_by(Site_Name, Cd_Status, Taxa_Label) %>%
       summarise(Abundance = sum(Mean_Abundance), .groups = "drop") %>%
-      mutate(Taxa_Label = factor(Taxa_Label,
-                                 levels = c(top_taxa[top_taxa != "Other"], "Other")))
+      mutate(
+        Taxa_Label = factor(
+          Taxa_Label,
+          levels = c(
+            gsub("_", " ", top_taxa[top_taxa != "Other"]),
+            "Other"
+          )
+        )
+      )
+    
     n_colors  <- length(top_taxa) + 1
     color_pal <- if (n_colors <= 12) {
       c(RColorBrewer::brewer.pal(min(n_colors - 1, 12), "Paired"), "grey70")
@@ -316,22 +328,23 @@ generate_figures <- function(res, out_root) {
       theme_publication() +
       theme(
         legend.title = element_text(
-          size = BASE_PT,
+          size = BASE_PT + 5,
           face = "bold"
         ),
         
         legend.text = element_text(
-          size = BASE_PT,
-          face = if (tax_level == "Genus") "italic" else "plain"
+          size = BASE_PT + 5,
+          face = if (tax_level == "Genus") "italic" else "plain",
+          margin = margin(t = 4, b = 4, l = 8)
         ),
         
-        legend.key.size = unit(0.9, "cm"),
+        legend.key.size = unit(1, "cm"),
         
-        axis.text.x = element_text(size = BASE_PT),
-        axis.text.y = element_text(size = BASE_PT),
+        axis.text.x = element_text(size = BASE_PT + 3),
+        axis.text.y = element_text(size = BASE_PT + 5),
         
         axis.title.y = element_text(
-          size = BASE_PT,
+          size = BASE_PT + 5,
           face = "bold"
         )
       ) +
