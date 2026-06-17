@@ -1,0 +1,405 @@
+# =========================================================
+# Title: Alpha and Beta diversity — PART 2: FIGURE GENERATION
+# Author: Zahraddeen Kabir Sani
+# Date: 07.03.2026
+# Run AFTER 01_compute_diversity.R
+# =========================================================
+
+# ==============================================================================
+# 1. PACKAGES
+# ==============================================================================
+required_packages <- c(
+  "tidyverse", "phyloseq", "vegan",
+  "ggpubr", "patchwork", "RColorBrewer"
+)
+
+install_and_load <- function(packages) {
+  for (pkg in packages) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      install.packages(pkg, dependencies = TRUE, repos = "https://cloud.r-project.org")
+    }
+    suppressPackageStartupMessages(library(pkg, character.only = TRUE))
+    cat(sprintf("  ✓ %s loaded\n", pkg))
+  }
+}
+install_and_load(required_packages)
+
+# ==============================================================================
+# 2. PATH CONFIGURATION
+# ==============================================================================
+setwd("C:/obj2_dataset")
+
+output_dir <- "Results"
+
+# ==============================================================================
+# 3. LOAD CACHED RESULTS
+# ==============================================================================
+cat("\n[STEP 1] Loading cached results...\n")
+
+load_cache <- function(domain_name) {
+  cache_path <- file.path(output_dir, tolower(domain_name), "cache",
+                          paste0(domain_name, "_analysis_cache.rds"))
+  if (!file.exists(cache_path)) {
+    cat(sprintf("  ⊗ Cache not found for %s: %s\n", domain_name, cache_path))
+    return(NULL)
+  }
+  res <- readRDS(cache_path)
+  cat(sprintf("  ✓ %s cache loaded\n", domain_name))
+  res
+}
+
+results_bacteria <- load_cache("Bacteria")
+results_archaea  <- load_cache("Archaea")
+results_fungi    <- load_cache("Fungi")
+
+# ==============================================================================
+# 4. RESTORE SHARED OBJECTS FROM ANY AVAILABLE CACHE
+# ==============================================================================
+first_res <- Filter(Negate(is.null),
+                    list(results_bacteria, results_archaea, results_fungi))[[1]]
+
+clean_meta <- first_res$clean_meta
+env_pool   <- first_res$env_pool
+pc_axes    <- first_res$pc_axes
+
+# ==============================================================================
+# 5. VISUALIZATION THEME & PALETTES
+# ==============================================================================
+PUB_FONT   <- "Helvetica"
+BASE_PT    <- 20
+BORDER_COL <- "#333333"
+LINE_WD    <- 0.8
+
+theme_publication <- function(base_size = BASE_PT) {
+  
+  theme_bw(base_size = base_size) +
+    
+    theme(
+      text = element_text(
+        family = PUB_FONT,
+        colour = "black"
+      ),
+      
+      plot.title = element_text(
+        family = PUB_FONT,
+        face = "bold",
+        colour = "black",
+        size = rel(1.1)
+      ),
+      
+      axis.title = element_text(
+        family = PUB_FONT,
+        face = "bold",
+        colour = "black"
+      ),
+      
+      axis.text = element_text(
+        family = PUB_FONT,
+        colour = "black"
+      ),
+      
+      legend.title = element_text(
+        family = PUB_FONT,
+        face = "bold",
+        colour = "black"
+      ),
+      
+      legend.text = element_text(
+        family = PUB_FONT,
+        colour = "black"
+      ),
+      
+      strip.text = element_text(
+        family = PUB_FONT,
+        face = "bold",
+        colour = "black"
+      ),
+      
+      # Match Cd figure style
+      panel.grid.minor = element_blank(),
+      
+      panel.border = element_rect(
+        colour = BORDER_COL,
+        fill = NA,
+        linewidth = LINE_WD
+      ),
+      
+      axis.ticks = element_line(
+        colour = BORDER_COL,
+        linewidth = LINE_WD
+      )
+    )
+}
+
+colors_cd <- c(
+  "Below" = "#2E8B57",
+  "Above" = "#CD5C5C"
+)
+
+colors_sites <- c(
+  "Ben Guerir" = "#388E3C", "Bir Mezoui" = "#1976D2",
+  "Gantour"    = "#7B1FA2", "Tadla"      = "#F06292",
+  "Tashraft"   = "#FBC02D", "Youssoufia" = "#B0B0B0"
+)
+
+# ==============================================================================
+# 6. FIGURE GENERATION FUNCTION
+# ==============================================================================
+generate_figures <- function(res, out_root) {
+  
+  if (is.null(res)) {
+    cat(sprintf("\n  Skipping (no cached data)\n")); return(invisible(NULL))
+  }
+  
+  domain_name <- res$domain_name
+  
+  cat(sprintf("\n╔══════════════════════════════════════════════════════╗\n"))
+  cat(sprintf("║  FIGURES: %-42s ║\n", toupper(domain_name)))
+  cat(sprintf("╚══════════════════════════════════════════════════════╝\n"))
+  
+  fig_dir <- file.path(out_root, "figures")
+  dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  # Unpack cache
+  ps               <- res$ps
+  ps_rel           <- res$ps_rel
+  samp_df          <- res$samp_df
+  alpha_per_sample <- res$alpha_per_sample
+  dist_bray        <- res$dist_bray
+  perm_cd          <- res$perm_cd
+  disp_cd          <- res$disp_cd
+  disp_site        <- res$disp_site
+  dbrda_mod        <- res$dbrda_mod
+  vp               <- res$vp
+  pc_avail         <- intersect(pc_axes, colnames(samp_df))
+  
+  pub_base <- theme_publication() +
+    theme(
+      axis.text.x = element_text(
+        size = BASE_PT,
+        angle = 0,
+        hjust = 0.5
+      ),
+      
+      axis.text.y = element_text(
+        size = BASE_PT
+      ),
+      
+      axis.title.x = element_text(
+        size = BASE_PT,
+        face = "bold"
+      ),
+      
+      axis.title.y = element_text(
+        size = BASE_PT,
+        face = "bold"
+      ),
+      
+      legend.title = element_text(
+        size = BASE_PT,
+        face = "bold"
+      ),
+      
+      legend.text = element_text(
+        size = BASE_PT
+      ),
+      
+      legend.position = "right",
+      legend.direction = "vertical"
+    )
+  
+  site_levels  <- levels(clean_meta$Site_Name)
+  site_col_use <- colors_sites[intersect(site_levels, names(colors_sites))]
+  
+  
+  # ── Fig 1B — Shannon x Site ─────────────────────────────────────────────────
+  p1b <- ggplot(alpha_per_sample,
+                aes(x = Site_Name, y = Shannon, fill = Site_Name)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+    geom_jitter(width = 0.2, alpha = 0.5, size = 2) +
+    scale_fill_manual(values = site_col_use) +
+    labs(x = NULL, y = "Shannon Diversity Index") +
+    pub_base +
+    theme(
+      legend.position = "none"
+    )
+  ggsave(file.path(fig_dir, "Fig1B_Shannon_Site.tiff"), p1b,
+         width = 11, height = 7, dpi = 600, compression = "lzw")
+  
+  # ── Fig 1D — Observed x Site ────────────────────────────────────────────────
+  p1d <- ggplot(alpha_per_sample,
+                aes(x = Site_Name, y = Observed, fill = Site_Name)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+    geom_jitter(width = 0.2, alpha = 0.5, size = 2) +
+    scale_fill_manual(values = site_col_use) +
+    labs(x = NULL, y = "Observed Richness") +
+    pub_base +
+    theme(
+      legend.position = "none"
+    )
+  ggsave(file.path(fig_dir, "Fig1D_Observed_Site.tiff"), p1d,
+         width = 11, height = 7, dpi = 600, compression = "lzw")
+  
+  cat("  ✓ Fig 1A-1D: Alpha diversity\n")
+  
+  # ── Fig 2 — PCoA ────────────────────────────────────────────────────────────
+  ord_pcoa <- ordinate(ps_rel, method = "PCoA", distance = "bray")
+  eig_var  <- ord_pcoa$values$Relative_eig[1:2] * 100
+  
+  p2 <- plot_ordination(ps_rel, ord_pcoa, color = "Cd_Status", shape = "Site_Name") +
+    geom_point(size = 4, alpha = 0.85) +
+    stat_ellipse(aes(fill = Cd_Status), geom = "polygon",
+                 alpha = 0.12, level = 0.95, show.legend = FALSE) +
+    scale_color_manual(values = colors_cd, name = "Threshold") +
+    scale_fill_manual(values = colors_cd) +
+    scale_shape_manual(
+      values = c(15:18, 21:23)[seq_along(levels(samp_df$Site_Name))],
+      name = "Site"
+    ) +
+    labs(
+      x = sprintf("PCoA 1 (%.1f%%)", eig_var[1]),
+      y = sprintf("PCoA 2 (%.1f%%)", eig_var[2])
+    ) + theme_publication()
+  ggsave(file.path(fig_dir, "Fig2_Beta_PCoA.tiff"), p2,
+         width = 10, height = 8, dpi = 600, compression = "lzw")
+  cat("  ✓ Fig 2: PCoA\n")
+  
+  # ── Fig 3 — PERMDISP dispersion (Cd Status) ─────────────────────────────────
+  disp_df <- data.frame(
+    Distance  = disp_cd$distances,
+    Cd_Status = disp_cd$group
+  )
+  p3_disp <- ggplot(disp_df, aes(x = Cd_Status, y = Distance, fill = Cd_Status)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.6) +
+    geom_jitter(width = 0.2, alpha = 0.5, size = 2) +
+    scale_fill_manual(values = colors_cd) +
+    labs(x = NULL, y = "Distance to Group Centroid", fill = "Cd Status") + pub_base
+  ggsave(file.path(fig_dir, "Fig3_PERMDISP_Dispersion.tiff"), p3_disp,
+         width = 8, height = 7, dpi = 600, compression = "lzw")
+  cat("  ✓ Fig 3: PERMDISP\n")
+  
+  # ── Fig 5 — Taxonomic bar charts (Phylum to Genus) ───────────────────────────
+  create_taxa_barplot <- function(ps_obj, tax_level, n_top = 20, domain) {
+    if (!tax_level %in% colnames(tax_table(ps_obj))) return(NULL)
+    taxa_data <- ps_obj %>%
+      tax_glom(tax_level) %>%
+      transform_sample_counts(function(x) x / sum(x) * 100) %>%
+      psmelt() %>%
+      group_by(Site_Name, Cd_Status, !!sym(tax_level)) %>%
+      summarise(Mean_Abundance = mean(Abundance, na.rm = TRUE), .groups = "drop")
+    top_taxa <- taxa_data %>%
+      group_by(!!sym(tax_level)) %>%
+      summarise(Total = sum(Mean_Abundance), .groups = "drop") %>%
+      arrange(desc(Total)) %>%
+      slice_head(n = n_top) %>%
+      pull(!!sym(tax_level))
+    plot_data <- taxa_data %>%
+      mutate(
+        Taxa_Label = if_else(!!sym(tax_level) %in% top_taxa,
+                             as.character(!!sym(tax_level)), "Other")
+      ) %>%
+      group_by(Site_Name, Cd_Status, Taxa_Label) %>%
+      summarise(Abundance = sum(Mean_Abundance), .groups = "drop") %>%
+      mutate(Taxa_Label = factor(Taxa_Label,
+                                 levels = c(top_taxa[top_taxa != "Other"], "Other")))
+    n_colors  <- length(top_taxa) + 1
+    color_pal <- if (n_colors <= 12) {
+      c(RColorBrewer::brewer.pal(min(n_colors - 1, 12), "Paired"), "grey70")
+    } else {
+      c(colorRampPalette(RColorBrewer::brewer.pal(12, "Paired"))(n_colors - 1), "grey70")
+    }
+    ggplot(plot_data, aes(x = Site_Name, y = Abundance, fill = Taxa_Label)) +
+      geom_bar(stat = "identity", position = "stack",
+               color = "white", linewidth = 0.3) +
+      scale_fill_manual(values = color_pal, name = tax_level) +
+      labs(x = NULL, y = "Mean Relative Abundance (%)") +
+      theme_publication() +
+      theme(
+        legend.title = element_text(
+          size = BASE_PT,
+          face = "bold"
+        ),
+        
+        legend.text = element_text(
+          size = BASE_PT,
+          face = if (tax_level == "Genus") "italic" else "plain"
+        ),
+        
+        legend.key.size = unit(0.9, "cm"),
+        
+        axis.text.x = element_text(size = BASE_PT),
+        axis.text.y = element_text(size = BASE_PT),
+        
+        axis.title.y = element_text(
+          size = BASE_PT,
+          face = "bold"
+        )
+      ) +
+      guides(fill = guide_legend(ncol = 1))
+  }
+  
+  for (tax_level in c("Phylum", "Class", "Order", "Genus")) {
+    n_uniq <- length(unique(na.omit(tax_table(ps)[, tax_level])))
+    if (!tax_level %in% colnames(tax_table(ps)) || n_uniq < 2) next
+    cat(sprintf("    • %s-level...\n", tax_level))
+    p_tax <- create_taxa_barplot(ps, tax_level, n_top = 20, domain = domain_name)
+    if (!is.null(p_tax))
+      ggsave(file.path(fig_dir, sprintf("Fig5_%s_Composition.tiff", tax_level)), p_tax,
+             width = 17, height = 10, dpi = 600, compression = "lzw")
+  }
+  cat("  ✓ Fig 5: Taxonomic composition charts\n")
+  
+  
+  # ── Fig 11 — PERMDISP by Site ─────────────────────────────────────────────────
+  tryCatch({
+    disp_site_df <- data.frame(
+      Distance  = disp_site$distances,
+      Site_Name = disp_site$group
+    )
+    p11 <- ggplot(disp_site_df,
+                  aes(x = Site_Name, y = Distance, fill = Site_Name)) +
+      geom_boxplot(outlier.shape = NA, alpha = 0.7, width = 0.6) +
+      geom_jitter(width = 0.2, alpha = 0.5, size = 2) +
+      scale_fill_manual(values = site_col_use) +
+      labs(x = NULL, y = "Distance to Group Centroid", fill = "Site") + pub_base
+    ggsave(file.path(fig_dir, "Fig11_PERMDISP_bySite.tiff"), p11,
+           width = 14, height = 9, dpi = 600, compression = "lzw")
+    cat("  ✓ Fig 11: PERMDISP by site\n")
+  }, error = function(e) cat("  ⊗ Fig 11 skipped:", conditionMessage(e), "\n"))
+  
+  cat(sprintf("\n  ✓ %s figures complete\n", domain_name))
+  invisible(NULL)
+}
+
+# ==============================================================================
+# 7. RUN FIGURE GENERATION
+# ==============================================================================
+cat("\n[STEP 2] Generating figures...\n")
+
+generate_figures(results_bacteria, file.path(output_dir, "bacteria"))
+generate_figures(results_archaea,  file.path(output_dir, "archaea"))
+generate_figures(results_fungi,    file.path(output_dir, "fungi"))
+
+
+# ==============================================================================
+# 9. FINAL SUMMARY
+# ==============================================================================
+cat("\n╔════════════════════════════════════════════════════════════╗\n")
+cat("║  FIGURE GENERATION COMPLETE                                ║\n")
+cat("╠════════════════════════════════════════════════════════════╣\n")
+cat("║  Output: Results/<domain>/figures/                         ║\n")
+cat("║    Fig1A-D  Alpha diversity (Shannon + Observed)           ║\n")
+cat("║    Fig2     Beta diversity PCoA                            ║\n")
+cat("║    Fig3     PERMDISP by Cd Status                          ║\n")
+cat("║    Fig4     dbRDA biplot                                   ║\n")
+cat("║    Fig4B    Variance partitioning bar chart                ║\n")
+cat("║    Fig5     Taxonomic composition (Phylum–Genus)           ║\n")
+cat("║    Fig6     NMDS + envfit vectors                          ║\n")
+cat("║    Fig7     Top 30 Genera heatmap                          ║\n")
+cat("║    Fig8     Simpson + Chao1 panel                          ║\n")
+cat("║    Fig9     Shannon vs Metal_PC1                           ║\n")
+cat("║    Fig10    Phyla Low vs High Cd                           ║\n")
+cat("║    Fig11    PERMDISP by Site                               ║\n")
+cat("║  Results/comparative/Comparative_Alpha_Diversity.tiff      ║\n")
+cat("╚════════════════════════════════════════════════════════════╝\n\n")
+cat("Done!\n\n")
