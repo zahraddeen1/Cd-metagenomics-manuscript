@@ -68,7 +68,7 @@ pc_axes    <- first_res$pc_axes
 PUB_FONT   <- "Helvetica"
 BASE_PT    <- 20
 BORDER_COL <- "#333333"
-LINE_WD    <- 0.8
+LINE_WD    <- 2
 
 theme_publication <- function(base_size = BASE_PT) {
   
@@ -126,7 +126,7 @@ theme_publication <- function(base_size = BASE_PT) {
       
       axis.ticks = element_line(
         colour = BORDER_COL,
-        linewidth = LINE_WD
+        linewidth = LINE_WD - 0.5
       )
     )
 }
