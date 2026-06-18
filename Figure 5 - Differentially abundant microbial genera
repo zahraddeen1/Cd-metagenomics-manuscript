@@ -1,0 +1,115 @@
+# ==============================================================================
+# PART B: PLOTTING SECTION (Loading from Saved Excel)
+# ==============================================================================
+
+# List of required CRAN packages
+required_packages <- c("tidyverse", "readxl", "RColorBrewer")
+
+install_and_load <- function(packages) {
+  for (pkg in packages) {
+    # 1. Check if the package is already installed
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      cat(sprintf("! %s not found. Installing from CRAN...\n", pkg))
+      
+      # 2. Install from a reliable global mirror to avoid pop-up prompts
+      install.packages(pkg, dependencies = TRUE, repos = "https://cloud.r-project.org")
+    }
+    
+    # 3. Load the package silently to keep the console clean
+    suppressPackageStartupMessages(library(pkg, character.only = TRUE))
+    cat(sprintf("  ✓ %s loaded\n", pkg))
+  }
+}
+
+# Run the function
+install_and_load(required_packages)
+
+# 1. SETUP DIRECTORIES & FILE PATHS
+output_dir <- "C:/obj2_dataset/Results_new"
+input_file <- "C:/obj2_dataset/Results/ANCOM_taxonomy_advanced/ANCOMBC_Final_Elaborate.xlsx"
+
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+# Consistent Aesthetic Constants
+PUB_FONT    <- "Helvetica"
+GLOBAL_SIZE <- 20
+TITLE_SIZE  <- 20
+BORDER_COL  <- "#333333"
+
+# 2. PLOTTING FUNCTION
+plot_from_excel <- function(kingdom_name, excel_path) {
+  cat(sprintf("Generating Plot for: %s\n", kingdom_name))
+  
+  dat_all <- read_excel(excel_path, sheet = kingdom_name)
+  
+  # Data Cleaning
+  dat_all <- dat_all %>%
+    mutate(across(c(log_fold_change, ci.lo.adj, ci.up.adj), 
+                  ~ as.numeric(gsub(",", ".", as.character(.)))))
+  
+  dat.fig <- dat_all %>%
+    mutate(abs_lfc = abs(log_fold_change)) %>%
+    arrange(significance == "ns", desc(abs_lfc)) %>%
+    slice_head(n = 20)
+  
+  target_order <- sort(unique(dat.fig$taxon))
+  dat.fig$taxon_clean <- factor(dat.fig$taxon, levels = rev(target_order))
+  
+  star_nudge <- max(abs(dat.fig$ci.up.adj), na.rm = TRUE) * 0.1
+  
+  # CREATE PLOT
+  p <- ggplot(dat.fig, aes(x = taxon_clean, y = log_fold_change, fill = taxon_clean)) +
+    # Increased width to 0.8 to make bars more prominent
+    geom_bar(stat = "identity", width = 0.8, color = BORDER_COL) +
+    geom_errorbar(aes(ymin = ci.lo.adj, ymax = ci.up.adj), width = 0.3) +
+    geom_text(aes(y = ifelse(log_fold_change > 0, ci.up.adj + star_nudge, ci.lo.adj - star_nudge), 
+                  label = significance, fontface = ifelse(significance == "ns", "italic", "bold")), 
+              size = 7) + 
+    geom_hline(yintercept = 0, linetype = "dashed", color = BORDER_COL) +
+    scale_fill_manual(values = grDevices::colorRampPalette(brewer.pal(12, "Paired"))(nrow(dat.fig)),
+                      name = "Genus", breaks = target_order, labels = gsub("_", " ", target_order)) + 
+    labs(x = NULL, y = "Log Fold Change",
+         title = sprintf("%s: Differential Abundance", kingdom_name)) +
+    coord_flip() +
+    theme_bw(base_size = GLOBAL_SIZE) +
+    theme(
+      text = element_text(family = PUB_FONT),
+      #plot.title = element_text(face = "bold", size = TITLE_SIZE, hjust = 0.5),
+      axis.title = element_text(face = "bold", size = GLOBAL_SIZE + 5),
+      axis.text.x = element_text(color = "black", size = GLOBAL_SIZE + 5),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      panel.border = element_rect(color = BORDER_COL, linewidth = 2),
+      
+      legend.title = element_text(face = "bold", size = GLOBAL_SIZE + 5),
+      legend.text = element_text(
+        face = "italic",
+        size = GLOBAL_SIZE + 5,
+        margin = margin(t = 4, b = 4, l = 6)
+      ),
+      
+      legend.key.size   = unit(1, "cm"),
+      legend.key.height = unit(1, "cm"),
+      legend.spacing.y  = unit(0.5, "cm"),
+      
+      plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt"),
+      panel.grid.minor = element_blank()
+    )
+  
+  # Save Plot - Increased Canvas Size for Better Detail
+  ggsave(file.path(output_dir, sprintf("plot_%s_genus_final.tiff", tolower(kingdom_name))),
+         plot = p, device = "tiff", width = 16, height = 12, 
+         dpi = 600, compression = "lzw")
+}
+
+# 3. EXECUTION
+if (file.exists(input_file)) {
+  for (k in intersect(excel_sheets(input_file), c("Archaea", "Bacteria", "Fungi"))) {
+    plot_from_excel(k, input_file)
+  }
+  cat("\nPlotting finished. Check your output directory.\n")
+} else {
+  stop("Input file not found at: ", input_file)
+}
+
+cat("\nPlotting finished. Check the output directory for TIFF files.\n")
