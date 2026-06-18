@@ -1,0 +1,198 @@
+# ==============================================================================
+# Title: MAGs quality plot & summary tables
+# Author: Zahraddeen Kabir Sani
+# Date: 13.04.2026
+# ==============================================================================
+
+# ===============================
+# LOAD LIBRARIES
+# ===============================
+library(tidyverse)
+library(patchwork)
+
+# ===============================
+# FILE PATHS
+# ===============================
+input_file <- "C:/obj2_dataset/obj2_data2/raw_data/MAGs/MAG_samplewise/quality_report.tsv"
+output_dir <- "C:/obj2_dataset/Results_new"
+
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+PUB_FONT    <- "Helvetica"
+BASE_PT     <- 20  
+TITLE_PT    <- 14
+BORDER_COL  <- "#333333"
+LINE_WD <- 2
+
+theme_publication <- function() {
+  theme_bw(base_size = BASE_PT) +
+    theme(
+      text = element_text(
+        family = PUB_FONT
+      ),
+      
+      plot.title = element_text(
+        face = "bold",
+        size = TITLE_PT
+      ),
+      
+      axis.title = element_text(
+        face = "bold",
+        size = BASE_PT + 5,
+        color = "black"
+      ),
+      
+      axis.text = element_text(
+        size = BASE_PT + 5,
+        color = "black"
+      ),
+      
+      legend.title = element_text(
+        face = "bold",
+        size = BASE_PT + 5,
+        color = "black"
+      ),
+      
+      legend.text = element_text(
+        size = BASE_PT + 5,
+        color = "black"
+      ),
+      
+      panel.grid.minor = element_blank(),
+      
+      panel.border = element_rect(
+        color = BORDER_COL,
+        fill = NA,
+        linewidth = LINE_WD
+      ),
+      
+      axis.ticks = element_line(
+        color = BORDER_COL,
+        linewidth = LINE_WD - 0.5
+      ),
+      
+      legend.position = "right"
+    )
+}
+
+# ===============================
+# LOAD DATA
+# ===============================
+df <- read_tsv(input_file)
+
+# ===============================
+# DATA PREPARATION
+# ===============================
+df <- df %>%
+  mutate(
+    Sample = str_extract(Name, "^[A-Z]+"),
+    
+    # Clean model names
+    Model = case_when(
+      str_detect(Completeness_Model_Used, "Gradient") ~ "Gradient Boost",
+      str_detect(Completeness_Model_Used, "Neural") ~ "Neural Network",
+      TRUE ~ Completeness_Model_Used
+    ),
+    
+    Quality = case_when(
+      Completeness >= 90 & Contamination <= 5 ~ "High",
+      Completeness >= 50 & Contamination <= 10 ~ "Medium",
+      TRUE ~ "Low"
+    ),
+    
+    Quality = factor(Quality, levels = c("High", "Medium", "Low")),
+    
+    Genome_Size_MB = Genome_Size / 1e6
+  )
+
+# ===============================
+# PANEL A: QC BUBBLE PLOT
+# ===============================
+p1 <- ggplot(df, aes(x = Completeness, y = Contamination)) +
+  geom_point(aes(size = Genome_Size_MB, color = Quality, shape = Model), alpha = 0.8) +
+  geom_vline(xintercept = 90, linetype = "dashed", color = BORDER_COL) +
+  geom_hline(yintercept = 5, linetype = "dashed", color = BORDER_COL) +
+  scale_color_manual(values = c("High" = "#1b9e77", "Medium" = "#fdae6b", "Low" = "#de2d26")) +
+  scale_size(range = c(4, 12)) +
+  labs(x = "Completeness (%)", y = "Contamination (%)", 
+       size = "Genome size (Mb)", color = "Quality", shape = "Model") +
+  theme_publication()
+
+# ===============================
+# PANEL B: COMPLETENESS DISTRIBUTION
+# ===============================
+p2 <- ggplot(df, aes(x = Sample, y = Completeness)) +
+  geom_violin(fill = "grey90", color = NA) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, color = BORDER_COL) +
+  labs(title = "Completeness Distribution", x = "Sample Group", y = "Completeness (%)") +
+  theme_publication()
+
+# ===============================
+# COMBINED FIGURE
+# ===============================
+final_plot <- p1 + p2 + plot_layout(widths = c(1.3, 1))
+
+# ===============================
+# SAVE FIGURES (TIFF ONLY)
+# ===============================
+
+# Combined figure
+ggsave(
+  filename = file.path(output_dir, "Figure1_MAG_QC_combined.tiff"),
+  plot = final_plot,
+  width = 15,
+  height = 6,
+  dpi = 600,
+  compression = "lzw"
+)
+
+# Panel A
+ggsave(
+  filename = file.path(output_dir, "Figure1A_QC_plot.tiff"),
+  plot = p1,
+  width = 12,
+  height = 8,
+  dpi = 600,
+  compression = "lzw"
+)
+
+# Panel B
+ggsave(
+  filename = file.path(output_dir, "Figure1B_Completeness_distribution.tiff"),
+  plot = p2,
+  width = 6,
+  height = 6,
+  dpi = 600,
+  compression = "lzw"
+)
+
+# ===============================
+# SUMMARY TABLE (WITH MAG LISTS)
+# ===============================
+summary_table <- df %>%
+  group_by(Quality) %>%
+  summarise(
+    Count = n(),
+    Mean_Completeness = mean(Completeness),
+    Mean_Contamination = mean(Contamination),
+    MAGs = paste(Name, collapse = "; ")
+  )
+
+write_csv(
+  summary_table,
+  file.path(output_dir, "MAG_quality_summary.csv")
+)
+
+# ===============================
+# FULL MAG LIST BY QUALITY
+# ===============================
+df %>%
+  arrange(Quality) %>%
+  write_csv(file.path(output_dir, "MAGs_by_quality_full_list.csv"))
+
+# ===============================
+# DONE
+# ===============================
+print("All TIFF figures and summary files saved successfully.")
