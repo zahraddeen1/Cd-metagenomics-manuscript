@@ -1,0 +1,186 @@
+# ==============================================================================
+# Title: Integrated MAG Site-Quality and Cluster-Novelty Analysis
+# Author: Zahraddeen Kabir Sani
+# Date: 13.04.2026
+# ==============================================================================
+
+# ---------------- LIBRARIES ----------------
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(extrafont)
+library(ggnewscale)
+library(viridis)
+
+# Define consistent constants
+PUB_FONT    <- "Helvetica"
+BASE_PT     <- 20
+TITLE_PT    <- 14
+BORDER_COL  <- "#333333"
+LINE_WD     <- 2
+
+# ---------------- THEME ----------------
+# Define the theme function
+theme_publication <- function() {
+  theme_bw(base_size = BASE_PT) +
+    theme(
+      text = element_text(
+        family = PUB_FONT
+      ),
+      
+      plot.title = element_text(
+        face = "bold",
+        size = TITLE_PT,
+        hjust = 0.5
+      ),
+      
+      axis.title = element_text(
+        face = "bold",
+        size = BASE_PT + 5,
+        color = "black"
+      ),
+      
+      axis.text = element_text(
+        size = BASE_PT + 5,
+        color = "black"
+      ),
+      
+      legend.title = element_text(
+        face = "bold",
+        size = BASE_PT + 5,
+        color = "black"
+      ),
+      
+      legend.text = element_text(
+        size = BASE_PT + 5,
+        color = "black"
+      ),
+      
+      legend.key.size = unit(1, "cm"),
+      
+      panel.grid.minor = element_blank(),
+      
+      panel.border = element_rect(
+        color = BORDER_COL,
+        fill = NA,
+        linewidth = LINE_WD
+      ),
+      
+      axis.ticks = element_line(
+        color = BORDER_COL,
+        linewidth = LINE_WD - 0.5
+      ),
+      
+      legend.position = "right"
+    )
+}
+
+# ---------------- PATHS ----------------
+input_tsv_path <- "C:/obj2_dataset/obj2_data2/raw_data/MAGs/MAG_samplewise/combined_metawrap_stats.tsv"
+input_csv_path <- "C:/obj2_dataset/obj2_data2/raw_data/MAGs/MAG_samplewise/Widb.csv"
+output_path    <- "C:/obj2_dataset/Results_new"
+
+if (!dir.exists(output_path)) dir.create(output_path, recursive = TRUE)
+
+# ---------------- 1. STACKED BAR PLOT (SITE AGGREGATION) ----------------
+df_bars <- read.delim(input_tsv_path, sep="\t")
+
+site_labels <- c("BG" = "Ben Guerir", "BM" = "Bir Mezoui", "GT" = "Gantour", 
+                 "TD" = "Tadla", "TS" = "Tashraft", "YS" = "Youssoufia")
+
+bar_processed <- df_bars %>%
+  mutate(
+    Site_ID = str_extract(sample, "^[A-Za-z]+"),
+    Site = recode(Site_ID, !!!site_labels),
+    Quality = ifelse(completeness >= 90 & contamination <= 5, "High", "Medium")
+  ) %>%
+  group_by(Site, Quality) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Site) %>%
+  mutate(Percentage = (Count / sum(Count)) * 100)
+
+# 2. THEN USE IT IN YOUR PLOT
+p_site_bars <- ggplot(bar_processed, aes(y = Site, x = Percentage, fill = Quality)) +
+  geom_bar(stat = "identity", color = "white", linewidth = 0.8, width = 0.7) +
+  scale_y_discrete(limits = rev, expand = expansion(mult = c(0.125, 0.125))) + 
+  scale_x_continuous(expand = expansion(mult = c(0.02, 0.02)), position = "top") +
+  scale_fill_manual(values = c("High" = "#1F4E79", "Medium" = "#9EC5E8")) +
+  labs(title = "MAG Quality Distribution by Site", x = "Percentage of MAGs (%)", y = "") +
+  theme_publication() # <--- Updated to match the function name defined above
+
+# ---------------- 2. REFINED NESTED RING PLOT (CLUSTERS) ----------------
+df_donut <- read.csv(input_csv_path)
+
+plot_data <- df_donut %>%
+  mutate(
+    Quality = ifelse(completeness >= 90 & contamination <= 5, "High", "Medium"),
+    cluster_id = factor(cluster)
+  ) %>%
+  arrange(desc(Quality), desc(cluster_members)) %>%
+  mutate(
+    fraction = cluster_members / sum(cluster_members),
+    ymax = cumsum(fraction),
+    ymin = lag(ymax, default = 0)
+  )
+
+n_clusters <- length(unique(plot_data$cluster))
+
+p_cluster_rings <- ggplot(plot_data) +
+  geom_rect(aes(ymax=ymax, ymin=ymin, xmax=3.0, xmin=2.4, fill=Quality), 
+            color="white", linewidth=0.3) +
+  scale_fill_manual(values = c("High" = "#2D6A4F", "Medium" = "#D4A373"), name = "Quality") +
+  
+  new_scale_fill() +
+  
+  geom_rect(aes(ymax=ymax, ymin=ymin, xmax=4.0, xmin=3.05, fill=cluster_id), 
+            color="white", linewidth=0.4) +
+  scale_fill_manual(values = viridis::turbo(n_clusters), name = "Clusters") +
+  
+  coord_polar(theta="y") +
+  xlim(c(1, 4.2)) + 
+  theme_void() +
+  
+  annotate("text", x = 1, y = 0, label = "MAG\nclusters", 
+           size = 8, fontface = "bold", family = "Helvetica", color = "#333333") +
+  
+  theme(
+    text = element_text(family = "Helvetica"),
+    
+    legend.position = c(1, 0.5),
+    
+    legend.box.margin = margin(l = 20, unit = "pt"),
+    
+    legend.key.size = unit(1.5, "cm"),
+    legend.spacing.y = unit(1, "cm"),
+    
+    legend.title = element_text(
+      face = "bold",
+      size = BASE_PT + 5
+    ),
+    
+    legend.text = element_text(
+      size = BASE_PT + 5
+    ),
+    
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5,
+      size = TITLE_PT
+    )
+  ) +
+  guides(
+    fill = guide_legend(
+      ncol = 1,
+      byrow = TRUE
+    )
+  )
+
+# ---------------- EXPORTING ----------------
+ggsave(file.path(output_path, "Figure_1_Site_Quality_Final.tiff"),
+       p_site_bars, device = "tiff", width = 10, height = 7, dpi = 600, compression = "lzw")
+
+ggsave(file.path(output_path, "Figure_2_Scientific_Rings_Final.tiff"),
+       p_cluster_rings, device = "tiff", width = 11, height = 8, dpi = 600, compression = "lzw")
+
+cat("\nAnalysis Complete. Both figures saved to:", output_path, "\n")
