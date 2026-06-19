@@ -1,0 +1,473 @@
+# ==============================================================================
+# Heavy Metal Resistome & Ecological Functional Potential
+# Authors  : Zahraddeen Kabir Sani
+# Updated  : 2026-04-13
+
+# ==============================================================================
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 0.  PACKAGES
+# ══════════════════════════════════════════════════════════════════════════════
+suppressPackageStartupMessages({
+  library(readr)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(purrr)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(colorspace)
+  library(ragg)
+  library(grid)
+  library(openxlsx)
+})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1.  INPUT FILES  ← edit these two paths if data moves
+# ══════════════════════════════════════════════════════════════════════════════
+BACMET_FILE <- "C:/obj2_dataset/obj2_data2/raw_data/MAGs/MAG_samplewise/all_bins_bacmet.tsv"
+METAB_FILE  <- "C:/obj2_dataset/obj2_data2/raw_data/MAGs/MAG_samplewise/integrated_metabolism_master.tsv.gz"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2.  OUTPUT
+# ══════════════════════════════════════════════════════════════════════════════
+OUTPUT_DIR <- "C:/obj2_dataset/Results_new"
+if (!dir.exists(OUTPUT_DIR)) dir.create(OUTPUT_DIR, recursive = TRUE)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3.  PUBLICATION THEME  (Nature style)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# --- Typography ---
+PUB_FONT  <- "Helvetica"
+BASE_PT   <- 10          # Nature body minimum
+TITLE_PT  <- BASE_PT + 1
+LABEL_PT  <- BASE_PT
+LEGEND_PT <- BASE_PT
+
+# --- Colours ---
+HM_LOW   <- "#EFF3FF"   # sequential low  (HMR bitscore)
+HM_MID   <- "#6BAED6"   # sequential mid
+HM_HIGH  <- "#084594"   # sequential high
+DIV_NEG  <- "#2166AC"   # diverging negative (z-score)
+DIV_MID  <- "#F7F7F7"   # diverging centre
+DIV_POS  <- "#B2182B"   # diverging positive
+GRID_COL <- "#FFFFFF"   # cell border colour
+BORDER_COL <- "#333333" # outer heatmap border
+GRID_LWD <- 0.5
+
+# --- Geometry ---
+CELL_MM  <- 5           # cell size in mm
+DEND_LWD <- 0.8
+LEG_BOX  <- unit(3, "mm")
+
+# --- Shared legend params ---
+hm_legend_params <- list(
+  direction   = "vertical",
+  grid_width  = LEG_BOX,
+  grid_height = LEG_BOX,
+  title_gp = gpar(
+    fontsize = LEGEND_PT,
+    fontface = "bold",
+    fontfamily = PUB_FONT,
+    col = "black"
+  ),
+  labels_gp = gpar(
+    fontsize = LEGEND_PT,
+    fontfamily = PUB_FONT,
+    col = "black"
+  ),
+  title_gap   = unit(2, "mm"),
+  gap         = unit(1, "mm")
+)
+
+annot_legend_params <- list(
+  grid_width  = LEG_BOX,
+  grid_height = LEG_BOX,
+  title_gp    = gpar(fontsize = LEGEND_PT, fontface = "bold",  fontfamily = PUB_FONT),
+  labels_gp   = gpar(fontsize = LEGEND_PT, fontfamily = PUB_FONT),
+  gap         = unit(1.5, "mm"),
+  title_gap   = unit(1,   "mm")
+)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4.  MAG NAME LOOKUP  (shared by both analyses)
+# ══════════════════════════════════════════════════════════════════════════════
+MAG_MAP <- data.frame(
+  Bin = c("BG06_bin.3","TS03_bin.1","TS01_bin.2","BM04_bin.5",
+          "BM02_bin.2","BM04_bin.4","TD02_bin.3","BM01_bin.6","BM05_bin.5"),
+  MAG = paste0("MAG ", 1:9),
+  stringsAsFactors = FALSE
+)
+
+relabel_bins <- function(x) {
+  idx <- match(x, MAG_MAP$Bin)
+  ifelse(!is.na(idx), MAG_MAP$MAG[idx], x)
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5.  EXPORT HELPER
+# ══════════════════════════════════════════════════════════════════════════════
+# mat      – matrix (used only for dimension calculation)
+# ht_obj   – ComplexHeatmap object
+# filename – base name, no extension
+# pad_mm   – c(bottom, left, top, right)
+export_tiff <- function(mat, ht_obj, filename, pad_mm = c(15, 20, 15, 20)) {
+  w_mm <- max(ncol(mat) * CELL_MM + pad_mm[2] + pad_mm[4] + 45, 89)
+  h_mm <- nrow(mat) * CELL_MM + pad_mm[1] + pad_mm[3] + 30
+  path <- file.path(OUTPUT_DIR, paste0(filename, ".tiff"))
+  agg_tiff(path, width = w_mm, height = h_mm,
+           units = "mm", res = 600, compression = "lzw")
+  draw(ht_obj, padding = unit(pad_mm, "mm"))
+  dev.off()
+  message("  ✔ Saved → ", path)
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PART A — HEAVY METAL RESISTOME (HMR)
+# ══════════════════════════════════════════════════════════════════════════════
+message("\n── Part A: Heavy Metal Resistome ──────────────────────────────────────")
+
+set.seed(123)
+
+# A1. Load ─────────────────────────────────────────────────────────────────────
+COLS <- c("Bin","Query","Subject","Identity","Align_len","Mismatch",
+          "Gap","Qstart","Qend","Sstart","Send","Evalue","Bitscore")
+
+df_raw <- read_tsv(BACMET_FILE, col_names = COLS, show_col_types = FALSE) |>
+  filter(!is.na(Evalue), Bin != "Bin_ID")
+
+# A2. Filter ───────────────────────────────────────────────────────────────────
+df_clean <- df_raw |>
+  mutate(
+    Align_Continuity = Align_len / (abs(Send - Sstart) + 1),
+    Gene_Name = sapply(strsplit(Subject, "\\|"),
+                       \(x) if (length(x) >= 2) x[2] else NA_character_)
+  ) |>
+  filter(!is.na(Gene_Name),
+         Evalue < 1e-20,
+         Identity > 30,
+         Align_Continuity > 0.8)
+
+# A3. Gene → metal category ────────────────────────────────────────────────────
+gene_category_map <- list(
+  "Copper (Cu)"      = c("copA","copB","copR","copS","pcoR"),
+  "Arsenic (As)"     = c("arsA","arsC","arsM","arsT"),
+  "Mercury (Hg)"     = c("merA"),
+  "Co/Zn/Cd"         = c("czcD","pbrA","tcrA"),
+  "Nickel/Cobalt"    = c("nikB","nikC","nikD","nikE","nikR","rcnA/yohM"),
+  "Chromium (Cr)"    = c("chrA","chrA1","chrB1","chrF"),
+  "Tellurium (Te)"   = c("terC"),
+  "Zinc (Zn)"        = c("znuC/yebM","zipB"),
+  "Iron (Fe)"        = c("fbpB","fbpC","sitB","sitD","yfeB","yfeC"),
+  "Manganese (Mn)"   = c("mntH/yfeP","mntR"),
+  "Molybdenum (Mo)"  = c("modA","modB","modC"),
+  "Phosphate (P)"    = c("pstA","pstB","pstC","pstS"),
+  "Multidrug Efflux" = c("acrC","emrBsm","mdtA/yegM","mdtB/yegN","mdtC",
+                         "smeD","smeF","smrA","sugE")
+)
+
+map_df <- stack(gene_category_map) |>
+  setNames(c("Gene_Name","Category")) |>
+  mutate(across(everything(), as.character))
+
+df_full <- df_clean |>
+  left_join(map_df, by = "Gene_Name") |>
+  filter(!is.na(Category))
+
+# A4. Core resistome (≥ 10 % of MAGs) ─────────────────────────────────────────
+n_bins     <- n_distinct(df_full$Bin)
+core_genes <- df_full |>
+  count(Gene_Name) |>
+  filter(n >= ceiling(0.1 * n_bins)) |>
+  pull(Gene_Name)
+
+df_core <- filter(df_full, Gene_Name %in% core_genes)
+
+# A5. Matrix (genes × MAGs, log10 bitscore) ───────────────────────────────────
+build_hmr_mat <- function(df) {
+  wide <- df |>
+    group_by(Bin, Gene_Name) |>
+    summarise(Score = max(Bitscore), .groups = "drop") |>
+    pivot_wider(names_from = Gene_Name, values_from = Score)
+  mat           <- as.matrix(wide[, -1])
+  rownames(mat) <- wide$Bin
+  mat_log       <- log10(mat)
+  mat_log[is.infinite(mat_log)] <- NA
+  t(mat_log)      # genes as rows, MAGs as columns
+}
+
+cluster_mat <- function(mat) {
+  imp <- mat; imp[is.na(imp)] <- 0
+  list(row = hclust(dist(imp),    method = "ward.D2"),
+       col = hclust(dist(t(imp)), method = "ward.D2"))
+}
+
+# A6. Heatmap builder ──────────────────────────────────────────────────────────
+hmr_heatmap <- function(mat, clust, df_src, title) {
+  colnames(mat) <- relabel_bins(colnames(mat))
+  
+  anno_df <- df_src |>
+    distinct(Gene_Name, Category) |>
+    filter(Gene_Name %in% rownames(mat)) |>
+    arrange(match(Gene_Name, rownames(mat)))
+  
+  cats       <- sort(unique(df_src$Category))
+  cat_colors <- setNames(qualitative_hcl(length(cats), palette = "Dark 3"), cats)
+  
+  row_ha <- rowAnnotation(
+    Category = anno_df$Category,
+    col      = list(Category = cat_colors),
+    show_annotation_name    = FALSE,
+    simple_anno_size        = unit(3, "mm"),
+    gp                      = gpar(col = GRID_COL, lwd = GRID_LWD),
+    annotation_legend_param = list(Category = annot_legend_params)
+  )
+  
+  q      <- quantile(mat, c(0.05, 0.5, 0.95), na.rm = TRUE)
+  col_fn <- colorRamp2(q, c(HM_LOW, HM_MID, HM_HIGH))
+  
+  Heatmap(
+    mat,
+    name                 = "log\u2081\u2080(bitscore)",
+    col                  = col_fn,
+    na_col               = "#F5F5F5",
+    width                = ncol(mat) * unit(CELL_MM, "mm"),
+    height               = nrow(mat) * unit(CELL_MM, "mm"),
+    cluster_rows         = clust$row,
+    cluster_columns      = clust$col,
+    left_annotation      = row_ha,
+    row_dend_gp          = gpar(lwd = DEND_LWD),
+    column_dend_gp       = gpar(lwd = DEND_LWD),
+    row_names_gp = gpar(
+      fontsize = LABEL_PT + 3,
+      fontface = "italic",
+      fontfamily = PUB_FONT,
+      col = "black"
+    ),
+    column_names_gp = gpar(
+      fontsize = LABEL_PT +3,
+      fontface = "plain",
+      fontfamily = PUB_FONT,
+      col = "black"
+    ),
+    rect_gp              = gpar(col = GRID_COL, lwd = GRID_LWD),
+    border               = TRUE,
+    border_gp            = gpar(col = BORDER_COL, lwd = 0.8),
+    column_title         = title,
+    column_title_gp = gpar(
+      fontsize = TITLE_PT + 3,
+      fontface = "bold",
+      fontfamily = PUB_FONT,
+      col = "black"
+    ),
+    heatmap_legend_param = hm_legend_params
+  )
+}
+
+# A7. Build & export ───────────────────────────────────────────────────────────
+mat_full  <- build_hmr_mat(df_full);  clust_full <- cluster_mat(mat_full)
+mat_core  <- build_hmr_mat(df_core);  clust_core <- cluster_mat(mat_core)
+
+export_tiff(mat_full, hmr_heatmap(mat_full, clust_full, df_full, "Full HMR Potential"),  "Fig_HMR_Full")
+export_tiff(mat_core, hmr_heatmap(mat_core, clust_core, df_core, "Core HMR Potential"),  "Fig_HMR_Core")
+
+# A8. Supplementary gene table ─────────────────────────────────────────────────
+gene_summary <- df_full |>
+  group_by(Gene_Name, Category) |>
+  summarise(
+    Mean_Bitscore       = round(mean(Bitscore), 1),
+    Mean_log10_Bitscore = round(mean(log10(Bitscore)), 3),
+    Prevalence_n_MAGs   = n_distinct(Bin),
+    .groups = "drop"
+  ) |>
+  arrange(Category, desc(Mean_Bitscore))
+
+write.xlsx(gene_summary,
+           file.path(OUTPUT_DIR, "Supplementary_HMR_Gene_Summary.xlsx"),
+           rowNames = FALSE)
+
+# A9. Methods snippet ──────────────────────────────────────────────────────────
+writeLines(c(
+  "METHODS SNIPPET — Heavy Metal Resistome",
+  "========================================", "",
+  "BLASTp hits against the BacMet database were retained when E-value < 1×10⁻²⁰,",
+  "amino-acid identity > 30 %, and alignment continuity (aligned length / subject",
+  "span) > 0.80. Bit-scores were log₁₀-transformed prior to visualization.",
+  "Genes detected in ≥ 10 % of MAGs were designated 'core'. Rows (genes) and",
+  "columns (MAGs) were clustered by Ward's D2 linkage on Euclidean distances,",
+  "with missing values imputed as zero for clustering only.", "",
+  paste("Total genes (filtered) :", length(unique(df_full$Gene_Name))),
+  paste("Core genes              :", length(core_genes)),
+  paste("MAGs analysed           :", n_distinct(df_full$Bin))
+), file.path(OUTPUT_DIR, "Methods_HMR.txt"))
+
+message("  Part A complete.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PART B — ECOLOGICAL FUNCTIONAL POTENTIAL
+# ══════════════════════════════════════════════════════════════════════════════
+message("\n── Part B: Ecological Functional Potential ────────────────────────────")
+
+set.seed(42)
+
+# B1. Load ─────────────────────────────────────────────────────────────────────
+metab <- read_tsv(METAB_FILE, show_col_types = FALSE)
+
+# B2. Functional classification ────────────────────────────────────────────────
+FUNC_RULES <- tribble(
+  ~col,          ~pattern,                          ~Function,
+  "db_can_hmm",  "^GH.*cellulose|glucan",           "Cellulose degradation",
+  "db_can_hmm",  "^GH.*xylan",                      "Hemicellulose degradation",
+  "db_can_hmm",  "^GH.*chitin",                     "Chitin degradation",
+  "db_can_hmm",  "^GH.*mannan",                     "Mannan degradation",
+  "db_can_hmm",  "^PL",                             "Pectin/alginate degradation",
+  "db_can_hmm",  "^GT",                             "Polysaccharide biosynthesis",
+  "db_can_hmm",  "^AA",                             "Oxidative enzymes",
+  "KO_definition","trehalase|trehalose",            "Trehalose metabolism",
+  "KO_definition","oxidoreductase|dehydrogenase",   "Redox metabolism",
+  "KO_definition","peptidoglycan",                  "Cell wall metabolism",
+  "KO_definition","glycosyltransferase",            "Cell surface modification",
+  "KO_definition","glycine betaine|osmotic",        "Osmotic stress",
+  "KO_definition","deacetylase|esterase",           "Detoxification"
+)
+
+metab$Function <- NA_character_
+for (i in seq_len(nrow(FUNC_RULES))) {
+  r   <- FUNC_RULES[i, ]
+  tgt <- metab[[r$col]]
+  hit <- !is.na(tgt) & str_detect(tgt, regex(r$pattern, ignore_case = TRUE))
+  metab$Function[is.na(metab$Function) & hit] <- r$Function
+}
+metab$Function[is.na(metab$Function) & !is.na(metab$KO) & metab$KO == "K00368"] <- "Nitrogen metabolism"
+
+# B3. Bin → MAG renaming ───────────────────────────────────────────────────────
+relabel_bin_id <- function(x) {
+  case_when(
+    str_detect(x, "BG06")                           ~ "MAG 1",
+    str_detect(x, "TS03")                           ~ "MAG 2",
+    str_detect(x, "TS01")                           ~ "MAG 3",
+    str_detect(x, "BM04") & str_detect(x, "bin.5") ~ "MAG 4",
+    str_detect(x, "BM02")                           ~ "MAG 5",
+    str_detect(x, "BM04") & str_detect(x, "bin.4") ~ "MAG 6",
+    str_detect(x, "TD02")                           ~ "MAG 7",
+    str_detect(x, "BM01")                           ~ "MAG 8",
+    str_detect(x, "BM05")                           ~ "MAG 9",
+    TRUE                                             ~ x
+  )
+}
+
+# B4. Matrix (MAGs × functions, z-score) ───────────────────────────────────────
+hm_df <- metab |>
+  filter(!is.na(Function)) |>
+  mutate(Bin_ID = relabel_bin_id(Bin_ID)) |>
+  count(Bin_ID, Function) |>
+  pivot_wider(names_from = Function, values_from = n, values_fill = 0L)
+
+mat_ecol           <- as.matrix(hm_df[, -1])
+rownames(mat_ecol) <- hm_df$Bin_ID
+mat_z              <- t(scale(t(mat_ecol)))   # row-wise z-score
+
+# B5. Heatmap ──────────────────────────────────────────────────────────────────
+col_fn_z <- colorRamp2(
+  c(min(mat_z, na.rm = TRUE), 0, max(mat_z, na.rm = TRUE)),
+  c(DIV_NEG, DIV_MID, DIV_POS)
+)
+
+ecol_ht <- Heatmap(
+  mat_z,
+  name                 = "Z-score",
+  col                  = col_fn_z,
+  na_col               = "#F5F5F5",
+  width                = ncol(mat_z) * unit(CELL_MM, "mm"),
+  height               = nrow(mat_z) * unit(CELL_MM, "mm"),
+  cluster_rows         = TRUE,
+  cluster_columns      = TRUE,
+  row_dend_gp          = gpar(lwd = DEND_LWD),
+  column_dend_gp       = gpar(lwd = DEND_LWD),
+  row_names_gp = gpar(
+    fontsize = LABEL_PT + 3,
+    fontface = "plain",
+    fontfamily = PUB_FONT,
+    col = "black"
+  ),
+  column_names_gp = gpar(
+    fontsize = LABEL_PT + 3,
+    fontface = "plain",
+    fontfamily = PUB_FONT,
+    col = "black"
+  ),
+  rect_gp              = gpar(col = GRID_COL, lwd = GRID_LWD),
+  border               = TRUE,
+  border_gp            = gpar(col = BORDER_COL, lwd = 0.8),
+  #column_title         = "Ecological Functional Potential",
+  column_title_gp = gpar(
+    fontsize = TITLE_PT,
+    fontface = "bold",
+    fontfamily = PUB_FONT,
+    col = "black"
+  ),
+  heatmap_legend_param = hm_legend_params
+)
+
+export_tiff(
+  t(mat_z), 
+  ecol_ht, 
+  "Fig_Ecological_Heatmap", 
+  pad_mm = c(30, 20, 30, 20) 
+)
+
+# B6. Summary statistics ───────────────────────────────────────────────────────
+func_summary    <- metab |> filter(!is.na(Function))     |> count(Function,     sort = TRUE)
+cazy_summary    <- metab |> filter(!is.na(db_can_hmm))   |>
+  mutate(Class = str_extract(db_can_hmm, "^[A-Z]+")) |> count(Class, sort = TRUE)
+ko_summary      <- metab |> filter(!is.na(KO))           |> count(KO, KO_definition, sort = TRUE)
+pathway_summary <- metab |> filter(!is.na(KEGG_Pathway)) |>
+  separate_rows(KEGG_Pathway, sep = ",") |> count(KEGG_Pathway, sort = TRUE)
+module_summary  <- metab |> filter(!is.na(KEGG_Module))  |>
+  separate_rows(KEGG_Module,  sep = ",") |> count(KEGG_Module,  sort = TRUE)
+
+# B7. Export tables ────────────────────────────────────────────────────────────
+walk2(
+  list(func_summary, cazy_summary, ko_summary, pathway_summary, module_summary),
+  c("stats_function_summary","stats_cazy_summary",
+    "stats_ko_summary","stats_pathway_summary","stats_module_summary"),
+  \(df, nm) write_tsv(df, file.path(OUTPUT_DIR, paste0(nm, ".tsv")))
+)
+
+write.xlsx(
+  list(Functions = func_summary,
+       CAZy      = cazy_summary,
+       KO        = head(ko_summary, 50),
+       Pathways  = head(pathway_summary, 50),
+       Modules   = head(module_summary, 50)),
+  file.path(OUTPUT_DIR, "Supplementary_Metabolism_Stats.xlsx"),
+  rowNames = FALSE
+)
+
+write.table(mat_ecol, file.path(OUTPUT_DIR, "heatmap_raw_counts.txt"),
+            sep = "\t", quote = FALSE, col.names = NA)
+write.table(mat_z,    file.path(OUTPUT_DIR, "heatmap_scaled_zscores.txt"),
+            sep = "\t", quote = FALSE, col.names = NA)
+
+# B8. Methods snippet ──────────────────────────────────────────────────────────
+writeLines(c(
+  "METHODS SNIPPET — Ecological Functional Heatmap",
+  "=================================================", "",
+  "Metabolic functions were assigned to genes using a hierarchical rule set applied",
+  "to CAZy family codes (db_can_hmm) and KEGG Orthology definitions (KO_definition).",
+  "Gene counts per MAG × function combination were row-wise z-score normalised to",
+  "highlight relative functional enrichment across MAGs. Rows (MAGs) and columns",
+  "(functions) were clustered by complete-linkage hierarchical clustering on",
+  "Euclidean distances.", "",
+  paste("Total genes processed   :", nrow(metab)),
+  paste("Functions detected      :", n_distinct(na.omit(metab$Function))),
+  paste("MAGs analysed           :", n_distinct(hm_df$Bin_ID))
+), file.path(OUTPUT_DIR, "Methods_Metabolism.txt"))
+
+message("  Part B complete.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DONE
+# ══════════════════════════════════════════════════════════════════════════════
+message("\n✔ All outputs saved to: ", OUTPUT_DIR)
