@@ -116,9 +116,30 @@ p1 <- ggplot(df, aes(x = Completeness, y = Contamination)) +
   geom_hline(yintercept = 5, linetype = "dashed", color = BORDER_COL) +
   scale_color_manual(values = c("High" = "#1b9e77", "Medium" = "#fdae6b", "Low" = "#de2d26")) +
   scale_size(range = c(4, 12)) +
-  labs(x = "Completeness (%)", y = "Contamination (%)", 
-       size = "Genome size (Mb)", color = "Quality", shape = "Model") +
-  theme_publication()
+  
+  guides(
+    color = guide_legend(
+      override.aes = list(size = 12)
+    ),
+    shape = guide_legend(
+      override.aes = list(size = 12)
+    )
+  ) +
+  
+  theme_publication() +
+  theme(
+    legend.key.size = unit(1.5, "cm"),
+    legend.key.height = unit(1.5, "cm"),
+    legend.spacing.y = unit(0.8, "cm"),
+    legend.box.spacing = unit(0.8, "cm")
+  ) +
+  labs(
+    x = "Completeness (%)",
+    y = "Contamination (%)",
+    size = "Genome size (Mb)",
+    color = "Quality",
+    shape = "Model"
+  )
 
 # ===============================
 # PANEL B: COMPLETENESS DISTRIBUTION
@@ -153,7 +174,7 @@ ggsave(
   filename = file.path(output_dir, "Figure1A_QC_plot.tiff"),
   plot = p1,
   width = 12,
-  height = 8,
+  height = 9,
   dpi = 600,
   compression = "lzw"
 )
