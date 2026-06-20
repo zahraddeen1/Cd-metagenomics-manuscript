@@ -1,27 +1,20 @@
 # ==============================================================================
-# PART B: PLOTTING SECTION (Loading from Saved Excel)
+# PART B: PLOTTING SECTION (Loading from Saved Excel) — STACKED, EQUAL-SIZE PANELS
 # ==============================================================================
 
-# List of required CRAN packages
-required_packages <- c("tidyverse", "readxl", "RColorBrewer")
+required_packages <- c("tidyverse", "readxl", "RColorBrewer", "patchwork")
 
 install_and_load <- function(packages) {
   for (pkg in packages) {
-    # 1. Check if the package is already installed
     if (!requireNamespace(pkg, quietly = TRUE)) {
       cat(sprintf("! %s not found. Installing from CRAN...\n", pkg))
-      
-      # 2. Install from a reliable global mirror to avoid pop-up prompts
       install.packages(pkg, dependencies = TRUE, repos = "https://cloud.r-project.org")
     }
-    
-    # 3. Load the package silently to keep the console clean
     suppressPackageStartupMessages(library(pkg, character.only = TRUE))
-    cat(sprintf("  ✓ %s loaded\n", pkg))
+    cat(sprintf("  - %s loaded\n", pkg))
   }
 }
 
-# Run the function
 install_and_load(required_packages)
 
 # 1. SETUP DIRECTORIES & FILE PATHS
@@ -33,53 +26,148 @@ if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 # Consistent Aesthetic Constants
 PUB_FONT    <- "Helvetica"
 GLOBAL_SIZE <- 20
-TITLE_SIZE  <- 20
 BORDER_COL  <- "#333333"
 
-# 2. PLOTTING FUNCTION
-plot_from_excel <- function(kingdom_name, excel_path) {
-  cat(sprintf("Generating Plot for: %s\n", kingdom_name))
-  
+# How many "row slots" every panel should reserve on the taxon axis.
+# This is what keeps panel HEIGHT identical across kingdoms even when
+# a kingdom has fewer than 20 significant/plotted taxa.
+N_SLOTS <- 20
+
+# 2. DATA PREP FUNCTION (separated from plotting so we can compute a
+#    shared color palette / legend structure if desired, and so each
+#    plot object can be returned rather than saved individually)
+prep_data <- function(kingdom_name, excel_path) {
   dat_all <- read_excel(excel_path, sheet = kingdom_name)
   
-  # Data Cleaning
   dat_all <- dat_all %>%
-    mutate(across(c(log_fold_change, ci.lo.adj, ci.up.adj), 
+    mutate(across(c(log_fold_change, ci.lo.adj, ci.up.adj),
                   ~ as.numeric(gsub(",", ".", as.character(.)))))
   
   dat.fig <- dat_all %>%
     mutate(abs_lfc = abs(log_fold_change)) %>%
     arrange(significance == "ns", desc(abs_lfc)) %>%
-    slice_head(n = 20)
+    slice_head(n = N_SLOTS)
   
   target_order <- sort(unique(dat.fig$taxon))
-  dat.fig$taxon_clean <- factor(dat.fig$taxon, levels = rev(target_order))
   
-  star_nudge <- max(abs(dat.fig$ci.up.adj), na.rm = TRUE) * 0.1
+  # --- KEY FIX FOR EQUAL PANEL HEIGHT ---
+  # Pad the factor levels out to N_SLOTS with invisible placeholder
+  # levels. The discrete axis then always has the same number of
+  # levels across all three kingdoms, so coord_flip()'s panel height
+  # (in a fixed-aspect / patchwork-aligned layout) stays identical,
+  # regardless of how many real taxa a given kingdom has.
+  n_real <- length(target_order)
+  if (n_real < N_SLOTS) {
+    placeholder_levels <- paste0(".pad_", seq_len(N_SLOTS - n_real))
+    full_levels <- c(target_order, placeholder_levels)
+  } else {
+    full_levels <- target_order
+  }
   
-  # CREATE PLOT
-  p <- ggplot(dat.fig, aes(x = taxon_clean, y = log_fold_change, fill = taxon_clean)) +
-    # Increased width to 0.8 to make bars more prominent
-    geom_bar(stat = "identity", width = 0.8, color = BORDER_COL) +
-    geom_errorbar(aes(ymin = ci.lo.adj, ymax = ci.up.adj), width = 0.3) +
-    geom_text(aes(y = ifelse(log_fold_change > 0, ci.up.adj + star_nudge, ci.lo.adj - star_nudge), 
-                  label = significance, fontface = ifelse(significance == "ns", "italic", "bold")), 
-              size = 7) + 
-    geom_hline(yintercept = 0, linetype = "dashed", color = BORDER_COL) +
-    scale_fill_manual(values = grDevices::colorRampPalette(brewer.pal(12, "Paired"))(nrow(dat.fig)),
-                      name = "Genus", breaks = target_order, labels = gsub("_", " ", target_order)) + 
-    labs(x = NULL, y = "Log Fold Change",
-         title = sprintf("%s: Differential Abundance", kingdom_name)) +
-    coord_flip() +
+  dat.fig$taxon_clean <- factor(dat.fig$taxon, levels = rev(full_levels))
+  
+  list(dat.fig = dat.fig, target_order = target_order, full_levels = full_levels)
+}
+
+# 3. PLOTTING FUNCTION — returns a ggplot object (no saving here)
+#    Every panel always draws its own x-axis tick labels (the LFC
+#    numbers), but the x-axis TITLE ("Log Fold Change") can be
+#    suppressed per panel via show_axis_title — used so only the
+#    bottom-most plot in the stack carries the title.
+build_plot <- function(kingdom_name, prep, show_axis_title = TRUE) {
+  
+  dat.fig       <- prep$dat.fig
+  target_order  <- prep$target_order
+  full_levels   <- prep$full_levels
+  
+  p <- ggplot(dat.fig,
+              aes(x = taxon_clean,
+                  y = log_fold_change,
+                  fill = taxon_clean)) +
+    
+    geom_bar(
+      stat = "identity",
+      width = 0.8,
+      color = BORDER_COL
+    ) +
+    
+    geom_errorbar(
+      aes(ymin = ci.lo.adj,
+          ymax = ci.up.adj),
+      width = 0.3
+    ) +
+    
+    geom_text(
+      aes(
+        y = ifelse(
+          log_fold_change > 0,
+          ci.up.adj + 0.3,
+          ci.lo.adj - 0.3
+        ),
+        label = significance,
+        fontface = ifelse(significance == "ns", "italic", "bold")
+      ),
+      size = 7
+    ) +
+    
+    geom_hline(
+      yintercept = 0,
+      linetype = "dashed",
+      color = BORDER_COL
+    ) +
+    
+    # Each kingdom keeps its OWN y-range here — this is what preserves
+    # each plot's unique CIs / reference points without forcing them
+    # to align across panels.
+    scale_y_continuous(
+      expand = expansion(mult = c(0.05, 0.05))
+    ) +
+    
+    # drop = FALSE keeps the padded placeholder levels reserved as
+    # empty space on the axis, even though nothing is drawn for them.
+    scale_x_discrete(drop = FALSE) +
+    
+    scale_fill_manual(
+      values = grDevices::colorRampPalette(
+        brewer.pal(12, "Paired")
+      )(length(target_order)),
+      name = "Genus",
+      breaks = target_order,
+      labels = gsub("_", " ", target_order),
+      na.translate = FALSE   # placeholder levels never get a fill value -> no legend entries
+    ) +
+    
+    labs(
+      x = NULL,
+      y = "Log Fold Change",
+      #title = sprintf("%s: Differential Abundance", kingdom_name)
+    ) +
+    
+    coord_flip(clip = "off") +
+    
     theme_bw(base_size = GLOBAL_SIZE) +
+    
     theme(
       text = element_text(family = PUB_FONT),
-      #plot.title = element_text(face = "bold", size = TITLE_SIZE, hjust = 0.5),
+      
       axis.title = element_text(face = "bold", size = GLOBAL_SIZE + 5),
+      
       axis.text.x = element_text(color = "black", size = GLOBAL_SIZE + 5),
+      axis.title.x = if (show_axis_title) {
+        element_text(face = "bold", size = GLOBAL_SIZE + 5)
+      } else {
+        element_blank()
+      },
+      axis.ticks.x = element_line(),
+      
       axis.text.y = element_blank(),
       axis.ticks.y = element_blank(),
-      panel.border = element_rect(color = BORDER_COL, linewidth = 2),
+      
+      # Identical, fixed-thickness border on every panel -> when
+      # stacked, the black rectangles line up with no staggering.
+      panel.border = element_rect(color = BORDER_COL, linewidth = 1, fill = NA),
+      
+      panel.grid.minor = element_blank(),
       
       legend.title = element_text(face = "bold", size = GLOBAL_SIZE + 5),
       legend.text = element_text(
@@ -87,29 +175,66 @@ plot_from_excel <- function(kingdom_name, excel_path) {
         size = GLOBAL_SIZE + 5,
         margin = margin(t = 4, b = 4, l = 6)
       ),
+      legend.key.size   = unit(1.2, "cm"),
+      legend.key.height = unit(1.2, "cm"),
+      legend.spacing.y  = unit(0.4, "cm"),
+      legend.position   = "right",
       
-      legend.key.size   = unit(1, "cm"),
-      legend.key.height = unit(1, "cm"),
-      legend.spacing.y  = unit(0.5, "cm"),
-      
-      plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt"),
-      panel.grid.minor = element_blank()
-    )
+      plot.margin = margin(20, 20, 20, 20, unit = "pt")
+    ) +
+    
+    guides(fill = guide_legend(ncol = 1, byrow = TRUE))
   
-  # Save Plot - Increased Canvas Size for Better Detail
-  ggsave(file.path(output_dir, sprintf("plot_%s_genus_final.tiff", tolower(kingdom_name))),
-         plot = p, device = "tiff", width = 16, height = 12, 
-         dpi = 600, compression = "lzw")
+  p
 }
 
-# 3. EXECUTION
+# 4. EXECUTION
 if (file.exists(input_file)) {
-  for (k in intersect(excel_sheets(input_file), c("Archaea", "Bacteria", "Fungi"))) {
-    plot_from_excel(k, input_file)
-  }
-  cat("\nPlotting finished. Check your output directory.\n")
+  
+  kingdoms <- intersect(excel_sheets(input_file), c("Archaea", "Bacteria", "Fungi"))
+  # enforce desired stacking order regardless of sheet order in the file
+  kingdoms <- kingdoms[match(c("Archaea", "Bacteria", "Fungi"), kingdoms)]
+  kingdoms <- kingdoms[!is.na(kingdoms)]
+  
+  preps <- lapply(kingdoms, prep_data, excel_path = input_file)
+  names(preps) <- kingdoms
+  
+  # Every panel keeps its own x-axis tick labels (each kingdom has a
+  # different LFC scale) and its own legend. Only the bottom-most
+  # panel (last in the stacking order) keeps the x-axis TITLE.
+  plots <- lapply(seq_along(kingdoms), function(i) {
+    build_plot(
+      kingdoms[i],
+      preps[[kingdoms[i]]],
+      show_axis_title = (i == length(kingdoms))
+    )
+  })
+  names(plots) <- kingdoms
+  
+  # 5. COMBINE — patchwork stacks vertically and aligns panel widths
+  #    automatically. heights = "1" each forces identical panel HEIGHT
+  #    too, since the taxon axis now has the same N_SLOTS levels in
+  #    every plot.
+  #
+  #    NOTE: guides are NOT collected here. Each plot keeps its own
+  #    legend, and patchwork's default behaviour centers a panel's
+  #    legend vertically against that panel (not the full stack), so
+  #    each legend sits aligned with its own kingdom's plot.
+  combined <- wrap_plots(plots, ncol = 1, heights = rep(1, length(plots)))
+  
+  ggsave(
+    file.path(output_dir, "plot_stacked_archaea_bacteria_fungi.tiff"),
+    plot = combined,
+    device = "tiff",
+    width = 16,
+    height = 12 * length(plots),   # scale canvas height to number of stacked panels
+    dpi = 600,
+    compression = "lzw",
+    limitsize = FALSE
+  )
+  
+  cat("\nStacked plot saved to:", file.path(output_dir, "plot_stacked_archaea_bacteria_fungi.tiff"), "\n")
+  
 } else {
   stop("Input file not found at: ", input_file)
 }
-
-cat("\nPlotting finished. Check the output directory for TIFF files.\n")
