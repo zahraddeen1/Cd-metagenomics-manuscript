@@ -169,16 +169,21 @@ build_plot <- function(kingdom_name, prep, show_axis_title = TRUE) {
       
       panel.grid.minor = element_blank(),
       
-      legend.title = element_text(face = "bold", size = GLOBAL_SIZE + 5),
+      legend.title = element_text(face = "bold", size = GLOBAL_SIZE + 5, hjust = 0),
       legend.text = element_text(
         face = "italic",
         size = GLOBAL_SIZE + 5,
-        margin = margin(t = 4, b = 4, l = 6)
+        margin = margin(t = 4, b = 4, l = 6),
+        hjust = 0
       ),
       legend.key.size   = unit(1.2, "cm"),
       legend.key.height = unit(1.2, "cm"),
       legend.spacing.y  = unit(0.4, "cm"),
       legend.position   = "right",
+      # Left-justify the legend block within its gutter (instead of the
+      # default center) so the left edge of every panel's legend lines
+      # up at the same horizontal position when the plots are stacked.
+      legend.justification = "left",
       
       plot.margin = margin(20, 20, 20, 20, unit = "pt")
     ) +
@@ -219,7 +224,10 @@ if (file.exists(input_file)) {
   #    NOTE: guides are NOT collected here. Each plot keeps its own
   #    legend, and patchwork's default behaviour centers a panel's
   #    legend vertically against that panel (not the full stack), so
-  #    each legend sits aligned with its own kingdom's plot.
+  #    each legend sits aligned with its own kingdom's plot. With
+  #    legend.justification = "left" set above, all three legends are
+  #    now also left-aligned with one another (same left edge),
+  #    matching the equal-size panel alignment.
   combined <- wrap_plots(plots, ncol = 1, heights = rep(1, length(plots)))
   
   ggsave(
